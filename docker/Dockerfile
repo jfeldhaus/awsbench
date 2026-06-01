@@ -52,12 +52,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 
-# Application JAR
 COPY --from=builder /build/target/awsbench-1.0-SNAPSHOT.jar ./awsbench.jar
+COPY benchman.properties .
 
-# JDBC drivers
-COPY --from=builder /root/.m2/repository/com/mysql/mysql-connector-j/9.3.0/mysql-connector-j-9.3.0.jar ./lib/
-COPY --from=builder /root/.m2/repository/org/postgresql/postgresql/42.7.5/postgresql-42.7.5.jar ./lib/
-COPY --from=builder /root/.m2/repository/com/oracle/database/jdbc/ojdbc17/23.7.0.25.01/ojdbc17-23.7.0.25.01.jar ./lib/
-
-ENTRYPOINT ["java", "-cp", "awsbench.jar:lib/*", "com.awsbench.TptbmAws"]
+ENTRYPOINT ["java", "-jar", "awsbench.jar", "-mode", "worker"]
