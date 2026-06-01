@@ -23,6 +23,8 @@
 hs_err_pid*
 replay_pid*
 
-# everything in the maven target folder
+# everything in the maven target folder and the vscode folder
 target/ 
+.vscode/
+
 
