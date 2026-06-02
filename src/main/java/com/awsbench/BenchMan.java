@@ -3,14 +3,11 @@ package com.awsbench;
 import software.amazon.awssdk.regions.Region;
 import software.amazon.awssdk.services.ecs.EcsClient;
 import software.amazon.awssdk.services.ecs.model.AssignPublicIp;
-import software.amazon.awssdk.services.ecs.model.ContainerOverride;
 import software.amazon.awssdk.services.ecs.model.DescribeTasksResponse;
 import software.amazon.awssdk.services.ecs.model.Failure;
-import software.amazon.awssdk.services.ecs.model.KeyValuePair;
 import software.amazon.awssdk.services.ecs.model.LaunchType;
 import software.amazon.awssdk.services.ecs.model.RunTaskResponse;
 import software.amazon.awssdk.services.ecs.model.Task;
-import software.amazon.awssdk.services.ecs.model.TaskOverride;
 import software.amazon.awssdk.services.sns.SnsClient;
 import software.amazon.awssdk.services.sns.model.CreateTopicResponse;
 import software.amazon.awssdk.services.sns.model.ListSubscriptionsByTopicResponse;
@@ -23,10 +20,14 @@ import software.amazon.awssdk.services.sqs.model.Message;
 import software.amazon.awssdk.services.sqs.model.QueueDoesNotExistException;
 import software.amazon.awssdk.services.sqs.model.ReceiveMessageResponse;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
+
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.IOException;
+import java.time.Instant;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Properties;
@@ -71,9 +72,11 @@ public class BenchMan {
   static public final String MODE_CONTROLLER = "controller";
   static public final String MODE_WORKER     = "worker";
 
-  static private String mode            = null;
-  static private int    expectedWorkers = 0;
-  static private String propsPath       = null;
+  static private String  mode            = null;
+  static private int     expectedWorkers = 0;
+  static private String  propsPath       = null;
+  static public  boolean verbose         = false;
+  static public  boolean debug           = false;
 
   // -------------------------------------------------------
   // State
@@ -81,7 +84,6 @@ public class BenchMan {
 
   private BenchMssg      mssg;
   private BenchContainer container;
-  private final List<String> benchmarks = new ArrayList<>();
 
   // -------------------------------------------------------
   // Lifecycle
@@ -96,12 +98,13 @@ public class BenchMan {
         BenchConfig.getString("benchman.command.topic.name"),
         BenchConfig.getString("benchman.results.queue.name"));
 
-    container = new BenchContainer(region);
-    container.initialize(
-        BenchConfig.getString("benchman.cluster.name"),
-        BenchConfig.getString("benchman.task.definition"),
-        BenchConfig.getString("benchman.subnet.id"),
-        mssg.getCommandTopicArn(), mssg.getResultsQueueUrl());
+    if (!debug) {
+      container = new BenchContainer(region);
+      container.initialize(
+          BenchConfig.getString("benchman.cluster.name"),
+          BenchConfig.getString("benchman.task.definition"),
+          BenchConfig.getString("benchman.subnet.id"));
+    }
 
     System.out.println("BenchMan initialized.");
     System.out.println("  Command topic : " + mssg.getCommandTopicArn());
@@ -119,48 +122,29 @@ public class BenchMan {
     System.out.println("BenchMan shut down.");
   }
 
-  // -------------------------------------------------------
-  // Benchmark management
-  // -------------------------------------------------------
-
-  // Registers a benchmark container by its identifier.
-  public void addBenchmark(String benchmarkId) {
-    benchmarks.add(benchmarkId);
-    System.out.println("Registered benchmark: " + benchmarkId);
+  static private void logVerbose(String direction, String json) {
+    System.out.println("[" + direction + "] " + BenchMessage.prettyPrint(json));
   }
 
-  // Removes a benchmark from the managed set.
-  public void removeBenchmark(String benchmarkId) {
-    benchmarks.remove(benchmarkId);
-    System.out.println("Removed benchmark: " + benchmarkId);
-  }
-
-  // Launches one ECS task per registered benchmark, then broadcasts START via SNS.
-  public void startBenchmarks() {
-    int count = benchmarks.size();
-    container.launchTasks(count);
-    mssg.publishCommand("START");
-    System.out.println("Launched " + count + " container(s) and sent START command.");
-  }
-
-  // Broadcasts STOP via SNS, then stops all running ECS tasks.
-  public void stopBenchmarks() {
-    mssg.publishCommand("STOP");
-    container.stopAllTasks();
-    System.out.println("Sent STOP command and stopped all containers.");
-  }
-
-  // Polls the results queue until the expected number of result messages
-  // have arrived or maxWaitMs milliseconds have elapsed.
-  public List<String> waitForResults(int expectedCount, long maxWaitMs) {
+  // Polls the results queue until expectedCount messages of the given type
+  // arrive or maxWaitMs elapses. Messages of any other type are consumed and
+  // discarded — this is the stale-message fix.
+  public List<String> waitForResults(int expectedCount, long maxWaitMs, String expectedType) {
     List<String> results = new ArrayList<>();
     long deadline = System.currentTimeMillis() + maxWaitMs;
 
     while (results.size() < expectedCount && System.currentTimeMillis() < deadline) {
-      List<Message> messages = mssg.receiveMessages();
-      for (Message msg : messages) {
-        results.add(BenchMssg.extractSnsBody(msg.body()));
+      for (Message msg : mssg.receiveMessages()) {
+        String body = BenchMssg.extractSnsBody(msg.body());
         mssg.deleteMessage(msg.receiptHandle());
+        String type = BenchMessage.getType(body);
+        if (expectedType.equals(type)) {
+          if (verbose) logVerbose("RECV", body);
+          results.add(body);
+        } else {
+          System.out.println("Discarding stale '" + type + "' message (waiting for '" + expectedType + "')");
+          if (verbose) logVerbose("DISC", body);
+        }
       }
     }
 
@@ -175,24 +159,29 @@ public class BenchMan {
     System.err.println(
         "\nUsage:\n\n" +
         "  BenchMan { -h | --help }\n\n" +
-        "  BenchMan -mode controller [-workers <n>] [-props <file>]\n\n" +
-        "  BenchMan -mode worker [-props <file>]\n\n" +
+        "  BenchMan -mode controller -workers <n> [-props <file>] [-v] [-debug]\n\n" +
+        "  BenchMan -mode worker [-props <file>] [-v]\n\n" +
         "Options:\n\n" +
         "  -h | --help            Print this message and exit.\n\n" +
         "  -mode controller       Provision AWS resources (SNS topic, SQS queue)\n" +
         "                         and broadcast commands to workers.\n\n" +
         "  -mode worker           Subscribe to the controller's SNS command topic,\n" +
         "                         listen for commands, and run the TptbmAws benchmark.\n\n" +
-        "  -workers <n>           Only valid with '-mode controller'. Specifies how\n" +
-        "                         many workers to wait for before sending commands.\n" +
-        "                         If omitted, the controller uses the number of ECS\n" +
-        "                         tasks it launched. Required when workers are started\n" +
-        "                         manually rather than via ECS (e.g. for local testing).\n\n" +
+        "  -workers <n>           Required with '-mode controller'. Sets the number of\n" +
+        "                         ECS Fargate tasks to launch. The controller waits for\n" +
+        "                         exactly N workers to send READY before broadcasting\n" +
+        "                         START, and for N DONE signals before shutting down.\n\n" +
         "  -props <file>          Path to a Java properties file containing AWS resource\n" +
         "                         names, region, and timeout settings. If omitted, the\n" +
         "                         program looks for benchman.properties in the current\n" +
         "                         working directory. The program exits if the file is not\n" +
-        "                         found or any required property is missing.\n");
+        "                         found or any required property is missing.\n\n" +
+        "  -v                     Verbose output. Prints the full JSON of every message\n" +
+        "                         sent and received.\n\n" +
+        "  -debug                 Debug mode (controller only). Skips ECS task launch\n" +
+        "                         and waits for workers that are already running locally\n" +
+        "                         (e.g. started via docker run). Useful for local testing\n" +
+        "                         without deploying to ECS.\n");
     System.exit(1);
   }
 
@@ -234,6 +223,12 @@ public class BenchMan {
           System.exit(1);
         }
         propsPath = args[i++];
+      } else if (args[i].equalsIgnoreCase("-v")) {
+        verbose = true;
+        i++;
+      } else if (args[i].equalsIgnoreCase("-debug")) {
+        debug = true;
+        i++;
       } else {
         System.err.println("Unknown argument: '" + args[i] + "'");
         usage();
@@ -249,42 +244,56 @@ public class BenchMan {
       System.err.println("'-workers' is only valid with '-mode controller'.");
       System.exit(1);
     }
+
+    if (MODE_CONTROLLER.equals(mode) && expectedWorkers <= 0) {
+      System.err.println("'-workers N' is required with '-mode controller'.");
+      usage();
+    }
   }
 
   static private void runController() {
-    int workerCount = (expectedWorkers > 0) ? expectedWorkers : 0;
+    int workerCount = expectedWorkers;
 
     BenchMan manager = new BenchMan();
     try {
       manager.initialize();
 
-      if (workerCount == 0)
-        workerCount = manager.benchmarks.size();
-
-      if (workerCount == 0) {
-        System.err.println("No workers expected. Use '-workers N' or register benchmarks before running.");
-        return;
-      }
-
-      System.out.println("Waiting for " + workerCount + " worker(s) to be ready...");
       long readyTimeout  = BenchConfig.getInt("benchman.worker.ready.timeout.ms");
       long resultTimeout = BenchConfig.getInt("benchman.result.wait.timeout.ms");
 
-      List<String> readySignals = manager.waitForResults(workerCount, readyTimeout);
+      if (debug) {
+        System.out.println("[DEBUG] Skipping ECS launch — expecting " + workerCount +
+            " locally running worker(s).");
+      } else {
+        System.out.println("Launching " + workerCount + " ECS task(s)...");
+        manager.container.launchTasks(workerCount);
+
+        System.out.println("Waiting for tasks to reach RUNNING state...");
+        if (!manager.container.waitForTasksRunning(readyTimeout)) {
+          System.out.println("Timed out waiting for ECS tasks to start. Aborting.");
+          return;
+        }
+      }
+
+      System.out.println("Waiting for " + workerCount + " worker(s) to be ready...");
+      List<String> readySignals = manager.waitForResults(workerCount, readyTimeout, "READY");
       if (readySignals.size() < workerCount) {
         System.out.println("Timed out waiting for workers (" +
             readySignals.size() + "/" + workerCount + " ready). Aborting.");
         return;
       }
 
-      System.out.println("All workers ready. Sending PING...");
-      manager.mssg.publishCommand("PING");
+      String commandId  = UUID.randomUUID().toString();
+      String startJson  = BenchMessage.start(commandId, Map.of());
+      System.out.println("All workers ready. Sending START...");
+      if (verbose) logVerbose("SEND", startJson);
+      manager.mssg.publishCommand(startJson);
 
-      List<String> results = manager.waitForResults(workerCount, resultTimeout);
+      List<String> results = manager.waitForResults(workerCount, resultTimeout, "DONE");
       if (results.size() < workerCount)
-        System.out.println("Timed out: received " + results.size() + "/" + workerCount + " responses.");
+        System.out.println("Timed out: received " + results.size() + "/" + workerCount + " DONE responses.");
       else
-        results.forEach(r -> System.out.println("Received: " + r));
+        results.forEach(r -> System.out.println("Received DONE from: " + BenchMessage.getField(r, "workerId")));
     } finally {
       manager.shutdown();
     }
@@ -297,17 +306,25 @@ public class BenchMan {
       worker.initialize(
           BenchConfig.getString("benchman.command.topic.name"),
           BenchConfig.getString("benchman.results.queue.name"));
-      worker.sendResult("READY");
+      String readyJson = BenchMessage.ready(worker.getWorkerId());
+      if (verbose) logVerbose("SEND", readyJson);
+      worker.sendResult(readyJson);
       System.out.println("Sent READY. Waiting for commands...");
       outer:
       while (true) {
         for (Message msg : worker.receiveCommand()) {
-          String command = BenchMssg.extractSnsBody(msg.body());
-          System.out.println("Received: " + command);
+          String body = BenchMssg.extractSnsBody(msg.body());
+          String type = BenchMessage.getType(body);
+          System.out.println("Received command: " + type);
+          if (verbose) logVerbose("RECV", body);
           worker.deleteCommand(msg.receiptHandle());
-          if ("PING".equals(command)) {
-            worker.sendResult("PONG");
-            System.out.println("Sent PONG.");
+          if ("START".equals(type)) {
+            String commandId = BenchMessage.getField(body, "commandId");
+            // TODO: run TptbmAws benchmark here
+            String doneJson  = BenchMessage.done(worker.getWorkerId(), commandId);
+            if (verbose) logVerbose("SEND", doneJson);
+            worker.sendResult(doneJson);
+            System.out.println("Sent DONE.");
             break outer;
           }
         }
@@ -332,12 +349,8 @@ public class BenchMan {
 // BenchContainer
 //
 // Encapsulates all ECS container operations on behalf of
-// BenchMan. Launches Fargate tasks for each benchmark,
-// tracks their ARNs, and stops them on shutdown.
-//
-// Each task receives the SNS topic ARN and SQS queue URL
-// as environment variables so it can communicate with
-// BenchMan through BenchMssg.
+// BenchMan. Launches Fargate tasks, tracks their ARNs,
+// waits for them to reach RUNNING, and stops them on shutdown.
 //
 //-----------------------------------------------------------
 
@@ -353,8 +366,6 @@ class BenchContainer {
   private String clusterName;
   private String taskDefinition;
   private String subnetId;
-  private String commandTopicArn;
-  private String resultsQueueUrl;
 
   private final List<String> runningTaskArns = new ArrayList<>();
 
@@ -371,19 +382,17 @@ class BenchContainer {
   // -------------------------------------------------------
 
   // Creates the ECS client and stores configuration needed to launch tasks.
-  public void initialize(String clusterName, String taskDefinition, String subnetId,
-      String commandTopicArn, String resultsQueueUrl) {
-    this.ecs             = EcsClient.builder().region(region).build();
-    this.clusterName     = clusterName;
-    this.taskDefinition  = taskDefinition;
-    this.subnetId        = subnetId;
-    this.commandTopicArn = commandTopicArn;
-    this.resultsQueueUrl = resultsQueueUrl;
+  public void initialize(String clusterName, String taskDefinition, String subnetId) {
+    this.ecs            = EcsClient.builder().region(region).build();
+    this.clusterName    = clusterName;
+    this.taskDefinition = taskDefinition;
+    this.subnetId       = subnetId;
   }
 
-  // Stops all running tasks and closes the ECS client.
+  // Stops all running tasks, waits for them to reach STOPPED, then closes the ECS client.
   public void shutdown() {
     stopAllTasks();
+    waitForTasksStopped(60_000);
     if (ecs != null)
       ecs.close();
   }
@@ -392,32 +401,15 @@ class BenchContainer {
   // Container operations
   // -------------------------------------------------------
 
-  // Launches count Fargate tasks, injecting the SNS and SQS coordinates
-  // as environment variables so each container can communicate with BenchMan.
+  // Launches count Fargate tasks and tracks their ARNs.
   public void launchTasks(int count) {
     if (count <= 0) return;
-
-    List<KeyValuePair> env = List.of(
-        KeyValuePair.builder().name("AWS_REGION").value(region.id()).build(),
-        KeyValuePair.builder().name("SNS_TOPIC_ARN").value(commandTopicArn).build(),
-        KeyValuePair.builder().name("SQS_QUEUE_URL").value(resultsQueueUrl).build()
-    );
-
-    ContainerOverride override = ContainerOverride.builder()
-        .name(taskDefinition)
-        .environment(env)
-        .build();
-
-    TaskOverride overrides = TaskOverride.builder()
-        .containerOverrides(override)
-        .build();
 
     RunTaskResponse response = ecs.runTask(r -> r
         .cluster(clusterName)
         .taskDefinition(taskDefinition)
         .launchType(LaunchType.FARGATE)
         .count(count)
-        .overrides(overrides)
         .networkConfiguration(n -> n.awsvpcConfiguration(v -> v
             .subnets(subnetId)
             .assignPublicIp(AssignPublicIp.ENABLED))));
@@ -447,6 +439,47 @@ class BenchContainer {
         .task(taskArn)
         .reason("BenchMan shutdown"));
     System.out.println("Stopped task: " + taskArn);
+  }
+
+  // Blocks until all tracked tasks have reached the RUNNING state,
+  // or until maxWaitMs milliseconds have elapsed. Returns true if
+  // all tasks are running, false if the timeout was reached.
+  // Tasks that stop unexpectedly (launch failures) are removed from tracking.
+  public boolean waitForTasksRunning(long maxWaitMs) {
+    long deadline = System.currentTimeMillis() + maxWaitMs;
+    List<String> pending = new ArrayList<>(runningTaskArns);
+    int failedCount = 0;
+
+    while (!pending.isEmpty() && System.currentTimeMillis() < deadline) {
+      DescribeTasksResponse resp = ecs.describeTasks(r -> r
+          .cluster(clusterName)
+          .tasks(pending));
+
+      for (Task task : resp.tasks()) {
+        String status = task.lastStatus();
+        if ("RUNNING".equals(status)) {
+          pending.remove(task.taskArn());
+          System.out.println("Task running: " + task.taskArn());
+        } else if ("STOPPED".equals(status)) {
+          String reason = task.stoppedReason() != null ? task.stoppedReason() : "unknown";
+          System.err.println("Task stopped unexpectedly: " + task.taskArn() + " — " + reason);
+          pending.remove(task.taskArn());
+          runningTaskArns.remove(task.taskArn());
+          failedCount++;
+        }
+      }
+
+      if (!pending.isEmpty()) {
+        try {
+          Thread.sleep(5000);
+        } catch (InterruptedException e) {
+          Thread.currentThread().interrupt();
+          return false;
+        }
+      }
+    }
+
+    return pending.isEmpty() && failedCount == 0;
   }
 
   // Blocks until all tracked tasks have reached the STOPPED state,
@@ -693,14 +726,10 @@ class BenchMssg {
 
   // SNS wraps the original payload in a JSON envelope when delivering to SQS.
   // This extracts the value of the "Message" field from that envelope.
+  // For messages sent directly to SQS (no envelope), the body is returned as-is.
   public static String extractSnsBody(String sqsBody) {
-    int start = sqsBody.indexOf("\"Message\"");
-    if (start == -1) return sqsBody;
-    start = sqsBody.indexOf('"', start + 9);
-    if (start == -1) return sqsBody;
-    int end = sqsBody.indexOf('"', start + 1);
-    if (end == -1) return sqsBody;
-    return sqsBody.substring(start + 1, end);
+    String message = BenchMessage.getField(sqsBody, "Message");
+    return (message != null) ? message : sqsBody;
   }
 }
 
@@ -724,6 +753,7 @@ class BenchWorker {
   private SnsClient sns;
   private SqsClient sqs;
 
+  private String workerId;
   private String commandTopicArn;
   private String commandQueueUrl;
   private String subscriptionArn;
@@ -732,6 +762,8 @@ class BenchWorker {
   public BenchWorker(Region region) {
     this.region = region;
   }
+
+  public String getWorkerId() { return workerId; }
 
   // Discovers the controller's topic and results queue by name,
   // creates a unique per-worker command queue, and subscribes it.
@@ -744,8 +776,8 @@ class BenchWorker {
 
     resultsQueueUrl = sqs.getQueueUrl(r -> r.queueName(resultsQueueName)).queueUrl();
 
-    String queueName = "benchman-worker-" + UUID.randomUUID();
-    commandQueueUrl  = sqs.createQueue(r -> r.queueName(queueName)).queueUrl();
+    workerId        = "benchman-worker-" + UUID.randomUUID();
+    commandQueueUrl = sqs.createQueue(r -> r.queueName(workerId)).queueUrl();
 
     String commandQueueArn = sqs.getQueueAttributes(r -> r
             .queueUrl(commandQueueUrl)
@@ -908,5 +940,133 @@ class BenchConfig {
 
   public static Region getRegion(String key) {
     return Region.of(getString(key));
+  }
+}
+
+//-----------------------------------------------------------
+//
+// BenchMessage
+//
+// Builds and parses the structured JSON messages exchanged
+// between the controller and workers.
+//
+// Command messages (controller → workers via SNS):
+//   PING, START, STOP
+//
+// Result messages (workers → controller via SQS):
+//   READY, PONG, RESULT, ERROR
+//
+// All messages carry a "type" discriminator so receivers can
+// filter by type and safely discard messages they don't expect.
+//
+//-----------------------------------------------------------
+
+class BenchMessage {
+
+  private static final ObjectMapper MAPPER = new ObjectMapper();
+
+  // -------------------------------------------------------
+  // Command builders (controller → workers)
+  // -------------------------------------------------------
+
+  public static String start(String commandId, Map<String, Object> benchmark) {
+    LinkedHashMap<String, Object> m = new LinkedHashMap<>();
+    m.put("type",      "START");
+    m.put("commandId", commandId);
+    m.put("timestamp", Instant.now().toString());
+    m.put("benchmark", benchmark);
+    return toJson(m);
+  }
+
+  public static String stop(String commandId) {
+    LinkedHashMap<String, Object> m = new LinkedHashMap<>();
+    m.put("type",      "STOP");
+    m.put("commandId", commandId);
+    m.put("timestamp", Instant.now().toString());
+    return toJson(m);
+  }
+
+  // -------------------------------------------------------
+  // Result builders (workers → controller)
+  // -------------------------------------------------------
+
+  public static String ready(String workerId) {
+    LinkedHashMap<String, Object> m = new LinkedHashMap<>();
+    m.put("type",      "READY");
+    m.put("workerId",  workerId);
+    m.put("timestamp", Instant.now().toString());
+    return toJson(m);
+  }
+
+  public static String done(String workerId, String commandId) {
+    LinkedHashMap<String, Object> m = new LinkedHashMap<>();
+    m.put("type",      "DONE");
+    m.put("workerId",  workerId);
+    m.put("commandId", commandId);
+    m.put("timestamp", Instant.now().toString());
+    return toJson(m);
+  }
+
+  public static String result(String workerId, String commandId, Map<String, Object> resultData) {
+    LinkedHashMap<String, Object> m = new LinkedHashMap<>();
+    m.put("type",      "RESULT");
+    m.put("workerId",  workerId);
+    m.put("commandId", commandId);
+    m.put("timestamp", Instant.now().toString());
+    m.put("result",    resultData);
+    return toJson(m);
+  }
+
+  public static String error(String workerId, String commandId, String message, String detail) {
+    LinkedHashMap<String, Object> err = new LinkedHashMap<>();
+    err.put("message", message);
+    err.put("detail",  detail);
+    LinkedHashMap<String, Object> m = new LinkedHashMap<>();
+    m.put("type",      "ERROR");
+    m.put("workerId",  workerId);
+    m.put("commandId", commandId);
+    m.put("timestamp", Instant.now().toString());
+    m.put("error",     err);
+    return toJson(m);
+  }
+
+  // -------------------------------------------------------
+  // Parsing
+  // -------------------------------------------------------
+
+  public static String getType(String json) {
+    return getField(json, "type");
+  }
+
+  public static String getField(String json, String field) {
+    try {
+      @SuppressWarnings("unchecked")
+      Map<String, Object> map = MAPPER.readValue(json, Map.class);
+      Object val = map.get(field);
+      return val != null ? val.toString() : null;
+    } catch (Exception e) {
+      return null;
+    }
+  }
+
+  // -------------------------------------------------------
+  // Helpers
+  // -------------------------------------------------------
+
+  public static String prettyPrint(String json) {
+    try {
+      Object obj = MAPPER.readValue(json, Object.class);
+      return MAPPER.writerWithDefaultPrettyPrinter().writeValueAsString(obj);
+    } catch (Exception e) {
+      return json;
+    }
+  }
+
+  private static String toJson(Object obj) {
+    try {
+      return MAPPER.writeValueAsString(obj);
+    } catch (Exception e) {
+      throw new RuntimeException("Failed to serialize message: " + e.getMessage(), e);
+    }
   }
 }
