@@ -55,4 +55,4 @@ WORKDIR /app
 COPY --from=builder /build/target/awsbench-1.0-SNAPSHOT.jar ./awsbench.jar
 COPY benchman.properties .
 
-ENTRYPOINT ["java", "-jar", "awsbench.jar", "-mode", "worker"]
+ENTRYPOINT ["java", "-jar", "awsbench.jar", "-mode", "worker", "-v"]
