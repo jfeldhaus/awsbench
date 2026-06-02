@@ -28,4 +28,6 @@ target/
 .vscode/
 .mvn/
 
-
+# RStudio
+.Rproj.user
+awsbench.Rproj
