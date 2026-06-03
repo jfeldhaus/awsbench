@@ -30,4 +30,5 @@ target/
 
 # RStudio
 .Rproj.user
+.Rhistory
 awsbench.Rproj
