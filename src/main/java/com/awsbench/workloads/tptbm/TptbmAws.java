@@ -1,4 +1,4 @@
-package com.awsbench;
+package com.awsbench.workloads.tptbm;
 
 //-----------------------------------------------------------
 //
