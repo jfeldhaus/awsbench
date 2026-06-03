@@ -9,59 +9,46 @@ The BenchMan program is responsible for implementing these capabilities. This pr
 This framework uses the SNS, SQS, ECR and ECS (Fargate) AWS services. The architecture looks like this.
 
 ```         
-╔══════════════════════════════════════════════════════════════════════════════╗
-║                           AWS (us-east-1)                                    ║
-║                                                                              ║
-║  ┌─────────────────────────────────────────────────────────────────────┐     ║
-║  │  ECR: 200214900248.dkr.ecr.us-east-1.amazonaws.com/aws/awsbench     │     ║
-║  └─────────────────────────────────┬───────────────────────────────────┘     ║
-║                                    │ pulled on task start                    ║
-║  ╔═════════════════════╗           │                                         ║
-║  ║  EC2 Instance       ║   RunTask │                                         ║
-║  ║  ┌───────────────┐  ║───────────┼──►┌─────────────────────────────────┐   ║
-║  ║  │  BenchMan     │  ║           │   │  ECS Fargate: benchman-cluster  │   ║
-║  ║  │  controller   │  ║           │   │                                 │   ║
-║  ║  │               │  ║           └──►│  tptbm-task   tptbm-task  ...   │   ║
-║  ║  │  BenchMssg    │  ║               │  ┌─────────┐  ┌─────────┐       │   ║
-║  ║  │  BenchContainer│ ║               │  │ BenchMan│  │ BenchMan│       │   ║
-║  ║  └──────┬────────┘  ║               │  │ worker  │  │ worker  │       │   ║
-║  ╚═════════╪═══════════╝               └──┴────┬────┴──┴────┬────┴───────┘   ║
-║            │                                   │            │                ║
-║            │ publish START                     │ create     │ create         ║
-║            │                                   │ + subscribe│ + subscribe    ║
-║            ▼                                   ▼            ▼                ║
-║  ┌───────────────────────────────────────────────────────────────────┐       ║
-║  │                  SNS Topic: benchman-commands                     │       ║
-║  └──────────────────────────┬────────────────────────────────────────┘       ║
-║                             │ fan-out on every publish                       ║
-║              ┌──────────────┼──────────────┐                                 ║
-║              ▼              ▼              ▼                                 ║
-║  ┌────────────────┐ ┌───────────────┐   ...                                  ║
-║  │ SQS            │ │ SQS           │                                        ║
-║  │ benchman-      │ │ benchman-     │                                        ║
-║  │ worker-<uuid1> │ │ worker-<uuid2>│                                        ║
-║  └───────┬────────┘ └───────┬───────┘                                        ║
-║          │ worker polls     │ worker polls                                   ║
-║          │                  │                                                ║
-║          │  READY / DONE sent directly (not via SNS)                         ║
-║          └──────────────────┴──────────────────────────────────────┐         ║
-║                                                                    ▼         ║
-║  ┌─────────────────────────────────────────────────────────────────────┐     ║
-║  │                   SQS Queue: benchman-results                       │     ║
-║  └─────────────────────────────────┬───────────────────────────────────┘     ║
-║                                    │ controller polls                        ║
-║                                    ▼                                         ║
-║                              BenchMan controller                             ║
-║                                                                              ║
-║  ┌───────────────────────────┐     ┌─────────────────────┐                   ║
-║  │ IAM                       │     │ CloudWatch Logs     │                   ║
-║  │ ecsTaskExecutionRole      │     │ /ecs/tptbm-task     │                   ║
-║  │  • ECR pull               │     │  (worker stdout)    │                   ║
-║  │  • CloudWatch Logs write  │     └─────────────────────┘                   ║
-║  │ benchman-task-role        │                                               ║
-║  │  • SNS CreateTopic        │                                               ║
-║  │  • SNS Subscribe/Receive  │                                               ║
-║  │  • SQS Create/Send/Recv   │                                               ║
-║  └───────────────────────────┘                                               ║
-╚══════════════════════════════════════════════════════════════════════════════╝
+┌──────────────────────────────────────────────────────────────────────────────┐
+│  AWS (us-east-1)                                                             │
+│                                                                              │
+│  ┌────────────────────────────────────────────────────────────────────────┐  │
+│  │  ECR: 200214900248.dkr.ecr.us-east-1.amazonaws.com/aws/awsbench:latest │  │
+│  └───────────────────────────────────┬────────────────────────────────────┘  │
+│                                      │ image pulled on task start            │
+│  ┌───────────────────────────┐       │  ┌─────────────────────────────────┐  │
+│  │  EC2 Instance             │       │  │  ECS Fargate: benchman-cluster  │  │
+│  │  BenchMan controller      ├─RunTask──►   tptbm-task × N                │  │
+│  │   BenchMessaging (SNS/SQS)│       └─►│  BenchMan worker                │  │
+│  │   BenchContainer (ECS)    │          │   BenchWorker (SNS/SQS)         │  │
+│  └─────────────┬─────────────┘          │   TptbmAws (workload)           │  │
+│                │                        └─────────────────┬───────────────┘  │
+│                │ publish START                            │ create queue     │
+│                │ (BenchPayload JSON)                      │ + subscribe      │
+│                ▼                                          ▼                  │
+│  ┌────────────────────────────────────────────────────────────────────────┐  │
+│  │  SNS Topic: benchman-commands                                          │  │
+│  └──────────────────────────┬──────────────────┬───────────────────────── ┘  │
+│                             │ fan-out          │                             │
+│                             ▼                  ▼                             │
+│  ┌──────────────────────────────┐  ┌──────────────────────────────┐          │
+│  │  SQS: benchman-worker-<id1>  │  │  SQS: benchman-worker-<id2>  │  ...     │
+│  └──────────────┬───────────────┘  └───────────────┬──────────────┘          │
+│                 │                                  │                         │
+│                 │  READY / DONE (direct SQS send)  │                         │
+│                 └──────────────────┬───────────────┘                         │
+│                                    ▼                                         │
+│  ┌────────────────────────────────────────────────────────────────────────┐  │
+│  │  SQS Queue: benchman-results  ◄── controller polls                     │  │
+│  └────────────────────────────────────────────────────────────────────────┘  │
+│                                                                              │
+│  ┌──────────────────────────────────────┐  ┌──────────────────────────────┐  │
+│  │  IAM                                 │  │  CloudWatch Logs             │  │
+│  │  ecsTaskExecutionRole                │  │  /ecs/tptbm-task             │  │
+│  │   ECR pull + CloudWatch Logs write   │  │  (worker container stdout)   │  │
+│  │  benchman-task-role                  │  └──────────────────────────────┘  │
+│  │   SNS CreateTopic, Subscribe, Recv   │                                    │
+│  │   SQS Create, Delete, Send, Recv     │                                    │
+│  └──────────────────────────────────────┘                                    │
+└──────────────────────────────────────────────────────────────────────────────┘
 ```
