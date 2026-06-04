@@ -32,6 +32,7 @@ class BenchConfig {
     "benchman.sqs.poll.wait.sec",
     "benchman.sqs.max.messages",
     "benchman.worker.ready.timeout.sec",
+    "benchman.ready_request.retry.sec",
     "benchman.result.wait.timeout.sec",
     "benchman.worker.start.timeout.sec",
     "benchman.worker.idle.timeout.sec",
@@ -62,7 +63,7 @@ class BenchConfig {
     }
 
     validate();
-    System.out.println("Loaded configuration from: " + file.getAbsolutePath());
+    System.out.println("Loaded properties from: " + file.getAbsolutePath());
   }
 
   // Checks all required keys are present and reports every missing one before exiting.
