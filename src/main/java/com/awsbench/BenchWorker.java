@@ -112,7 +112,7 @@ class BenchWorker {
     return sqs.receiveMessage(r -> r
             .queueUrl(commandQueueUrl)
             .maxNumberOfMessages(BenchConfig.getInt("benchman.sqs.max.messages"))
-            .waitTimeSeconds(BenchConfig.getInt("benchman.sqs.poll.wait.seconds")))
+            .waitTimeSeconds(BenchConfig.getInt("benchman.sqs.poll.wait.sec")))
         .messages();
   }
 
