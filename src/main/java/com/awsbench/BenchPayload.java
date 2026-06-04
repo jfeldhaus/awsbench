@@ -44,13 +44,19 @@ class BenchPayload {
     return toJson(m);
   }
 
-  public static String exec(String sessionId, String commandId, Map<String, Object> command) {
+  // cmd is the fully resolved command string (all ${prop} references already substituted).
+  // targets is "all", "one", or a count string. leaderId is the workerId of the leader
+  // worker, used by workers to decide whether to execute "one"-targeted commands.
+  public static String exec(String sessionId, String commandId,
+      String cmd, String targets, String leaderId) {
     LinkedHashMap<String, Object> m = new LinkedHashMap<>();
     m.put("type",      "EXEC");
     m.put("sessionId", sessionId);
     m.put("commandId", commandId);
     m.put("timestamp", Instant.now().toString());
-    m.put("command",   command);
+    m.put("cmd",       cmd);
+    m.put("targets",   targets);
+    if (leaderId != null) m.put("leader_id", leaderId);
     return toJson(m);
   }
 
@@ -76,15 +82,19 @@ class BenchPayload {
     return toJson(m);
   }
 
+  // returnCode: process exit code; durationMs: wall-clock execution time;
+  // output: stdout and stderr merged into a single string.
   public static String execResult(String workerId, String sessionId, String commandId,
-      Map<String, Object> result) {
+      int returnCode, long durationMs, String output) {
     LinkedHashMap<String, Object> m = new LinkedHashMap<>();
-    m.put("type",      "EXEC_RESULT");
-    m.put("workerId",  workerId);
-    m.put("sessionId", sessionId);
-    m.put("commandId", commandId);
-    m.put("timestamp", Instant.now().toString());
-    m.put("result",    result);
+    m.put("type",        "EXEC_RESULT");
+    m.put("workerId",    workerId);
+    m.put("sessionId",   sessionId);
+    m.put("commandId",   commandId);
+    m.put("timestamp",   Instant.now().toString());
+    m.put("return_code", returnCode);
+    m.put("duration_ms", durationMs);
+    m.put("output",      output);
     return toJson(m);
   }
 
