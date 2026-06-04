@@ -86,10 +86,11 @@ public class BenchMan {
     System.out.println("[" + direction + "] " + BenchPayload.prettyPrint(json));
   }
 
-  // Polls the results queue until expectedCount messages of the given type
-  // arrive or maxWaitMs elapses. Messages of any other type are consumed and
-  // discarded — this is the stale-message fix.
-  public List<String> waitForResults(int expectedCount, long maxWaitMs, String expectedType) {
+  // Polls the results queue until expectedCount messages of the given type and
+  // sessionId arrive, or maxWaitMs elapses. Messages with the wrong type or a
+  // mismatched sessionId are consumed and discarded.
+  public List<String> waitForResults(int expectedCount, long maxWaitMs,
+      String expectedType, String sessionId) {
     List<String> results = new ArrayList<>();
     long deadline = System.currentTimeMillis() + maxWaitMs;
 
@@ -98,13 +99,19 @@ public class BenchMan {
         String body = BenchMessaging.extractSnsBody(msg.body());
         mssg.deleteMessage(msg.receiptHandle());
         String type = BenchPayload.getType(body);
-        if (expectedType.equals(type)) {
-          if (verbose) logVerbose("RECV", body);
-          results.add(body);
-        } else {
+        if (!expectedType.equals(type)) {
           System.out.println("Discarding stale '" + type + "' message (waiting for '" + expectedType + "')");
           if (verbose) logVerbose("DISC", body);
+          continue;
         }
+        String msgSession = BenchPayload.getField(body, "sessionId");
+        if (!sessionId.equals(msgSession)) {
+          System.out.println("Discarding '" + type + "' message with wrong session ID.");
+          if (verbose) logVerbose("DISC", body);
+          continue;
+        }
+        if (verbose) logVerbose("RECV", body);
+        results.add(body);
       }
     }
 
@@ -218,8 +225,8 @@ public class BenchMan {
     try {
       manager.initialize();
 
-      long readyTimeout  = BenchConfig.getInt("benchman.worker.ready.timeout.ms");
-      long resultTimeout = BenchConfig.getInt("benchman.result.wait.timeout.ms");
+      long readyTimeout  = BenchConfig.getInt("benchman.worker.ready.timeout.sec") * 1000L;
+      long resultTimeout = BenchConfig.getInt("benchman.result.wait.timeout.sec") * 1000L;
 
       if (nodeploy) {
         System.out.println("Skipping ECS launch — expecting " + workerCount +
@@ -235,8 +242,15 @@ public class BenchMan {
         }
       }
 
-      System.out.println("Waiting for " + workerCount + " worker(s) to be ready...");
-      List<String> readySignals = manager.waitForResults(workerCount, readyTimeout, "READY");
+      String sessionId = UUID.randomUUID().toString();
+      System.out.println("Session ID: " + sessionId);
+
+      String readyRequestJson = BenchPayload.readyRequest(sessionId);
+      System.out.println("Sending READY_REQUEST to " + workerCount + " worker(s)...");
+      if (verbose) logVerbose("SEND", readyRequestJson);
+      manager.mssg.publishCommand(readyRequestJson);
+
+      List<String> readySignals = manager.waitForResults(workerCount, readyTimeout, "READY", sessionId);
       if (readySignals.size() < workerCount) {
         System.out.println("Timed out waiting for workers (" +
             readySignals.size() + "/" + workerCount + " ready). Aborting.");
@@ -244,16 +258,21 @@ public class BenchMan {
       }
 
       String commandId = UUID.randomUUID().toString();
-      String startJson = BenchPayload.start(commandId, Map.of());
-      System.out.println("All workers ready. Sending START...");
-      if (verbose) logVerbose("SEND", startJson);
-      manager.mssg.publishCommand(startJson);
+      String execJson  = BenchPayload.exec(sessionId, commandId, Map.of());
+      System.out.println("All workers ready. Sending EXEC...");
+      if (verbose) logVerbose("SEND", execJson);
+      manager.mssg.publishCommand(execJson);
 
-      List<String> results = manager.waitForResults(workerCount, resultTimeout, "DONE");
+      List<String> results = manager.waitForResults(workerCount, resultTimeout, "EXEC_RESULT", sessionId);
       if (results.size() < workerCount)
-        System.out.println("Timed out: received " + results.size() + "/" + workerCount + " DONE responses.");
+        System.out.println("Timed out: received " + results.size() + "/" + workerCount + " EXEC_RESULT responses.");
       else
-        results.forEach(r -> System.out.println("Received DONE from: " + BenchPayload.getField(r, "workerId")));
+        results.forEach(r -> System.out.println("Received EXEC_RESULT from: " + BenchPayload.getField(r, "workerId")));
+
+      String stopJson = BenchPayload.stop(sessionId, UUID.randomUUID().toString());
+      System.out.println("Sending STOP to all workers...");
+      if (verbose) logVerbose("SEND", stopJson);
+      manager.mssg.publishCommand(stopJson);
     } finally {
       manager.shutdown();
     }
@@ -266,29 +285,80 @@ public class BenchMan {
       worker.initialize(
           BenchConfig.getString("benchman.command.topic.name"),
           BenchConfig.getString("benchman.results.queue.name"));
-      String readyJson = BenchPayload.ready(worker.getWorkerId());
-      if (verbose) logVerbose("SEND", readyJson);
-      worker.sendResult(readyJson);
-      System.out.println("Sent READY. Waiting for commands...");
-      outer:
-      while (true) {
+      long deadline = System.currentTimeMillis()
+          + BenchConfig.getInt("benchman.worker.start.timeout.sec") * 1000L;
+
+      // Phase 1: wait for READY_REQUEST and extract the session ID.
+      System.out.println("Waiting for READY_REQUEST...");
+      String sessionId = null;
+      while (sessionId == null && System.currentTimeMillis() < deadline) {
         for (Message msg : worker.receiveCommand()) {
           String body = BenchMessaging.extractSnsBody(msg.body());
           String type = BenchPayload.getType(body);
-          System.out.println("Received command: " + type);
-          if (verbose) logVerbose("RECV", body);
           worker.deleteCommand(msg.receiptHandle());
-          if ("START".equals(type)) {
+          if ("READY_REQUEST".equals(type)) {
+            sessionId = BenchPayload.getField(body, "sessionId");
+            if (verbose) logVerbose("RECV", body);
+            System.out.println("Received READY_REQUEST (session: " + sessionId + ")");
+            break;
+          }
+          System.out.println("Discarding unexpected '" + type + "' before READY_REQUEST.");
+          if (verbose) logVerbose("DISC", body);
+        }
+      }
+
+      if (sessionId == null) {
+        System.out.println("Timed out waiting for READY_REQUEST. Shutting down.");
+        return;
+      }
+
+      // Phase 2: send READY, then persistently handle EXEC commands until STOP
+      // or until no command arrives within the idle timeout.
+      String readyJson = BenchPayload.ready(worker.getWorkerId(), sessionId);
+      if (verbose) logVerbose("SEND", readyJson);
+      worker.sendResult(readyJson);
+      System.out.println("Sent READY. Waiting for commands...");
+
+      long idleTimeoutMs = BenchConfig.getInt("benchman.worker.idle.timeout.sec") * 1000L;
+      long idleDeadline  = System.currentTimeMillis() + idleTimeoutMs;
+
+      loop:
+      while (System.currentTimeMillis() < idleDeadline) {
+        for (Message msg : worker.receiveCommand()) {
+          String body = BenchMessaging.extractSnsBody(msg.body());
+          String type = BenchPayload.getType(body);
+          worker.deleteCommand(msg.receiptHandle());
+
+          String msgSession = BenchPayload.getField(body, "sessionId");
+          if (!sessionId.equals(msgSession)) {
+            System.out.println("Discarding '" + type + "' with wrong session ID.");
+            if (verbose) logVerbose("DISC", body);
+            continue;
+          }
+
+          if ("EXEC".equals(type)) {
+            if (verbose) logVerbose("RECV", body);
+            System.out.println("Received EXEC.");
             String commandId = BenchPayload.getField(body, "commandId");
-            // TODO: run TptbmAws benchmark here
-            String doneJson = BenchPayload.done(worker.getWorkerId(), commandId);
-            if (verbose) logVerbose("SEND", doneJson);
-            worker.sendResult(doneJson);
-            System.out.println("Sent DONE.");
-            break outer;
+            // TODO: execute command defined in payload
+            String execResultJson = BenchPayload.execResult(
+                worker.getWorkerId(), sessionId, commandId, Map.of());
+            if (verbose) logVerbose("SEND", execResultJson);
+            worker.sendResult(execResultJson);
+            System.out.println("Sent EXEC_RESULT. Waiting for next command...");
+            idleDeadline = System.currentTimeMillis() + idleTimeoutMs;
+          } else if ("STOP".equals(type)) {
+            if (verbose) logVerbose("RECV", body);
+            System.out.println("Received STOP. Shutting down.");
+            break loop;
+          } else {
+            System.out.println("Discarding unexpected '" + type + "'.");
+            if (verbose) logVerbose("DISC", body);
           }
         }
       }
+      if (System.currentTimeMillis() >= idleDeadline)
+        System.out.println("Idle timeout reached. No command received. Shutting down.");
     } finally {
       worker.shutdown();
     }

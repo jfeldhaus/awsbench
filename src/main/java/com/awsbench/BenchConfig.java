@@ -29,10 +29,12 @@ class BenchConfig {
     "benchman.cluster.name",
     "benchman.task.definition",
     "benchman.subnet.id",
-    "benchman.sqs.poll.wait.seconds",
+    "benchman.sqs.poll.wait.sec",
     "benchman.sqs.max.messages",
-    "benchman.worker.ready.timeout.ms",
-    "benchman.result.wait.timeout.ms",
+    "benchman.worker.ready.timeout.sec",
+    "benchman.result.wait.timeout.sec",
+    "benchman.worker.start.timeout.sec",
+    "benchman.worker.idle.timeout.sec",
   };
 
   private static Properties props = null;
