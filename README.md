@@ -18,13 +18,14 @@ This framework uses the SNS, SQS, ECR and ECS (Fargate) AWS services. The archit
 │                                      │ image pulled on task start            │
 │  ┌───────────────────────────┐       │  ┌─────────────────────────────────┐  │
 │  │  EC2 Instance             │       │  │  ECS Fargate: benchman-cluster  │  │
-│  │  BenchMan controller      ├─RunTask──►   tptbm-task × N                │  │
+│  │  BenchMan controller      ├─RunTask─►│  benchman-task × N              │  │
 │  │   BenchMessaging (SNS/SQS)│       └─►│  BenchMan worker                │  │
 │  │   BenchContainer (ECS)    │          │   BenchWorker (SNS/SQS)         │  │
-│  └─────────────┬─────────────┘          │   TptbmAws (workload)           │  │
-│                │                        └─────────────────┬───────────────┘  │
-│                │ publish START                            │ create queue     │
-│                │ (BenchPayload JSON)                      │ + subscribe      │
+│  │   BenchDoc + BenchCmd     │          │   sh -c <cmd> via ProcessBuilder│  │
+│  └─────────────┬─────────────┘          └─────────────────┬───────────────┘  │
+│                │                                          │ create queue     │
+│                │ publish commands                         │ + subscribe      │
+│                │ (READY_REQUEST, EXEC, STOP)              │                  │
 │                ▼                                          ▼                  │
 │  ┌────────────────────────────────────────────────────────────────────────┐  │
 │  │  SNS Topic: benchman-commands                                          │  │
@@ -35,7 +36,7 @@ This framework uses the SNS, SQS, ECR and ECS (Fargate) AWS services. The archit
 │  │  SQS: benchman-worker-<id1>  │  │  SQS: benchman-worker-<id2>  │  ...     │
 │  └──────────────┬───────────────┘  └───────────────┬──────────────┘          │
 │                 │                                  │                         │
-│                 │  READY / DONE (direct SQS send)  │                         │
+│                 │  READY / EXEC_RESULT (direct SQS)│                         │
 │                 └──────────────────┬───────────────┘                         │
 │                                    ▼                                         │
 │  ┌────────────────────────────────────────────────────────────────────────┐  │
@@ -44,7 +45,7 @@ This framework uses the SNS, SQS, ECR and ECS (Fargate) AWS services. The archit
 │                                                                              │
 │  ┌──────────────────────────────────────┐  ┌──────────────────────────────┐  │
 │  │  IAM                                 │  │  CloudWatch Logs             │  │
-│  │  ecsTaskExecutionRole                │  │  /ecs/tptbm-task             │  │
+│  │  ecsTaskExecutionRole                │  │  /ecs/benchman-task          │  │
 │  │   ECR pull + CloudWatch Logs write   │  │  (worker container stdout)   │  │
 │  │  benchman-task-role                  │  └──────────────────────────────┘  │
 │  │   SNS CreateTopic, Subscribe, Recv   │                                    │
