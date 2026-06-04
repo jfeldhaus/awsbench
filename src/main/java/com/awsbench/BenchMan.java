@@ -3,6 +3,9 @@ package com.awsbench;
 import software.amazon.awssdk.regions.Region;
 import software.amazon.awssdk.services.sqs.model.Message;
 
+import java.io.BufferedReader;
+import java.io.IOException;
+import java.io.InputStreamReader;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -15,8 +18,8 @@ import java.util.UUID;
 // Top-level orchestrator. Runs as either a controller
 // (provisions AWS resources, deploys ECS tasks, broadcasts
 // commands, and collects results) or a worker (subscribes
-// to the SNS command topic, receives commands, and runs
-// the TptbmAws benchmark).
+// to the SNS command topic, receives EXEC commands, and
+// executes the workload defined in each command payload).
 //
 // Entry point for both modes. Configuration is loaded from
 // benchman.properties via BenchConfig before any work begins.
@@ -35,6 +38,7 @@ public class BenchMan {
   static private String  mode            = null;
   static private int     expectedWorkers = 0;
   static private String  propsPath       = null;
+  static private String  configPath      = null;
   static public  boolean verbose         = false;
   static public  boolean nodeploy        = false;
 
@@ -49,8 +53,8 @@ public class BenchMan {
   // Lifecycle
   // -------------------------------------------------------
 
-  // Provisions all SNS, SQS, and ECS resources.
-  // Must be called before any other methods.
+  // Provisions SNS and SQS resources. Also provisions ECS resources
+  // unless -nodeploy is set. Must be called before any other methods.
   public void initialize() {
     Region region = BenchConfig.getRegion("benchman.region");
     mssg = new BenchMessaging(region);
@@ -72,7 +76,8 @@ public class BenchMan {
     System.out.println("  ECS cluster   : " + BenchConfig.getString("benchman.cluster.name"));
   }
 
-  // Stops all running containers and releases all AWS resources.
+  // Stops all running ECS tasks and closes AWS clients.
+  // The SNS topic and SQS results queue are left intact for reuse on the next run.
   public void shutdown() {
     if (container != null)
       container.shutdown();
@@ -126,18 +131,23 @@ public class BenchMan {
     System.err.println(
         "\nUsage:\n\n" +
         "  BenchMan { -h | --help }\n\n" +
-        "  BenchMan -mode controller -workers <n> [-props <file>] [-v] [-nodeploy]\n\n" +
+        "  BenchMan -mode controller -workers <n> -config <file> [-props <file>] [-v] [-nodeploy]\n\n" +
         "  BenchMan -mode worker [-props <file>] [-v]\n\n" +
         "Options:\n\n" +
         "  -h | --help            Print this message and exit.\n\n" +
         "  -mode controller       Provision AWS resources (SNS topic, SQS queue)\n" +
         "                         and broadcast commands to workers.\n\n" +
         "  -mode worker           Subscribe to the controller's SNS command topic,\n" +
-        "                         listen for commands, and run the TptbmAws benchmark.\n\n" +
+        "                         wait for READY_REQUEST, then handle EXEC commands\n" +
+        "                         until STOP is received or the idle timeout expires.\n\n" +
         "  -workers <n>           Required with '-mode controller'. Sets the number of\n" +
-        "                         ECS Fargate tasks to launch. The controller waits for\n" +
-        "                         exactly N workers to send READY before broadcasting\n" +
-        "                         START, and for N DONE signals before shutting down.\n\n" +
+        "                         ECS Fargate tasks to launch. The controller sends\n" +
+        "                         READY_REQUEST, waits for N READY signals, executes\n" +
+        "                         commands from the -config document, then sends STOP.\n\n" +
+        "  -config <file>         Required with '-mode controller'. Path to the benchmark\n" +
+        "                         document (JSON) defining the commands to execute, their\n" +
+        "                         order, variable substitutions, wait behaviour, and\n" +
+        "                         which workers each command targets.\n\n" +
         "  -props <file>          Path to a Java properties file containing AWS resource\n" +
         "                         names, region, and timeout settings. If omitted, the\n" +
         "                         program looks for benchman.properties in the current\n" +
@@ -196,6 +206,12 @@ public class BenchMan {
       } else if (args[i].equalsIgnoreCase("-nodeploy")) {
         nodeploy = true;
         i++;
+      } else if (args[i].equalsIgnoreCase("-config")) {
+        if (++i >= args.length) {
+          System.err.println("'-config' requires a file path argument.");
+          System.exit(1);
+        }
+        configPath = args[i++];
       } else {
         System.err.println("Unknown argument: '" + args[i] + "'");
         usage();
@@ -216,10 +232,30 @@ public class BenchMan {
       System.err.println("'-workers N' is required with '-mode controller'.");
       usage();
     }
+
+    if (MODE_CONTROLLER.equals(mode) && configPath == null) {
+      System.err.println("'-config <file>' is required with '-mode controller'.");
+      usage();
+    }
+
+    if (configPath != null && !MODE_CONTROLLER.equals(mode)) {
+      System.err.println("'-config' is only valid with '-mode controller'.");
+      System.exit(1);
+    }
   }
 
   static private void runController() {
     int workerCount = expectedWorkers;
+
+    // Load and validate the benchmark document before any AWS activity.
+    BenchDoc doc = BenchDoc.load(configPath);
+    List<String> errors = doc.validate(workerCount);
+    if (!errors.isEmpty()) {
+      System.err.println("Benchmark document is invalid:");
+      errors.forEach(e -> System.err.println("  " + e));
+      return;
+    }
+    System.out.println("Configuration: " + doc.getName());
 
     BenchMan manager = new BenchMan();
     try {
@@ -245,29 +281,81 @@ public class BenchMan {
       String sessionId = UUID.randomUUID().toString();
       System.out.println("Session ID: " + sessionId);
 
-      String readyRequestJson = BenchPayload.readyRequest(sessionId);
-      System.out.println("Sending READY_REQUEST to " + workerCount + " worker(s)...");
-      if (verbose) logVerbose("SEND", readyRequestJson);
-      manager.mssg.publishCommand(readyRequestJson);
+      // Resend READY_REQUEST every retryInterval seconds until all workers respond.
+      // Workers may not be subscribed yet when the first send occurs, so retrying
+      // ensures late-subscribing workers receive the request.
+      long retryIntervalMs = BenchConfig.getInt("benchman.ready_request.retry.sec") * 1000L;
+      long readyDeadline   = System.currentTimeMillis() + readyTimeout;
+      List<String> readySignals = new ArrayList<>();
 
-      List<String> readySignals = manager.waitForResults(workerCount, readyTimeout, "READY", sessionId);
+      while (readySignals.size() < workerCount && System.currentTimeMillis() < readyDeadline) {
+        String readyRequestJson = BenchPayload.readyRequest(sessionId);
+        if (readySignals.isEmpty())
+          System.out.println("Sending READY_REQUEST to " + workerCount + " worker(s)...");
+        else
+          System.out.println("Resending READY_REQUEST (" +
+              readySignals.size() + "/" + workerCount + " ready so far)...");
+        if (verbose) logVerbose("SEND", readyRequestJson);
+        manager.mssg.publishCommand(readyRequestJson);
+
+        long batchTimeout = Math.min(retryIntervalMs, readyDeadline - System.currentTimeMillis());
+        if (batchTimeout <= 0) break;
+        readySignals.addAll(
+            manager.waitForResults(workerCount - readySignals.size(), batchTimeout, "READY", sessionId));
+      }
+
       if (readySignals.size() < workerCount) {
         System.out.println("Timed out waiting for workers (" +
             readySignals.size() + "/" + workerCount + " ready). Aborting.");
         return;
       }
 
-      String commandId = UUID.randomUUID().toString();
-      String execJson  = BenchPayload.exec(sessionId, commandId, Map.of());
-      System.out.println("All workers ready. Sending EXEC...");
-      if (verbose) logVerbose("SEND", execJson);
-      manager.mssg.publishCommand(execJson);
+      // Designate the first worker to respond as the leader for "targets: one" commands.
+      String leaderId = BenchPayload.getField(readySignals.get(0), "workerId");
+      System.out.println("All workers ready. Leader: " + leaderId);
 
-      List<String> results = manager.waitForResults(workerCount, resultTimeout, "EXEC_RESULT", sessionId);
-      if (results.size() < workerCount)
-        System.out.println("Timed out: received " + results.size() + "/" + workerCount + " EXEC_RESULT responses.");
-      else
-        results.forEach(r -> System.out.println("Received EXEC_RESULT from: " + BenchPayload.getField(r, "workerId")));
+      // Execute commands in order. For wait=false commands, accumulate the expected
+      // result count and collect all pending results after the loop completes.
+      int pendingResultCount = 0;
+
+      for (BenchCmd command : doc.getCommandsInOrder()) {
+        String resolvedCmd = doc.resolveCmd(command.getCmd());
+        String commandId   = UUID.randomUUID().toString();
+        int    targetCount = command.expectedResultCount(workerCount);
+
+        String execJson = BenchPayload.exec(sessionId, commandId,
+            resolvedCmd, command.getTargetsString(), leaderId);
+
+        System.out.printf("Sending EXEC [%d] '%s'  targets=%s  cmd=%s%n",
+            command.getCmdSeq(), command.getDescription(),
+            command.getTargetsString(), resolvedCmd);
+        if (verbose) logVerbose("SEND", execJson);
+        manager.mssg.publishCommand(execJson);
+
+        if (command.isWait()) {
+          List<String> results = manager.waitForResults(targetCount, resultTimeout, "EXEC_RESULT", sessionId);
+          if (results.size() < targetCount)
+            System.out.printf("  Timed out: %d/%d result(s) received.%n", results.size(), targetCount);
+          else
+            results.forEach(r -> System.out.println(
+                "  EXEC_RESULT from: " + BenchPayload.getField(r, "workerId")));
+        } else {
+          pendingResultCount += targetCount;
+          System.out.println("  Not waiting for result (wait=false).");
+        }
+      }
+
+      // Collect any results from wait=false commands.
+      if (pendingResultCount > 0) {
+        System.out.println("Collecting " + pendingResultCount + " pending result(s)...");
+        List<String> pending = manager.waitForResults(pendingResultCount, resultTimeout, "EXEC_RESULT", sessionId);
+        if (pending.size() < pendingResultCount)
+          System.out.printf("Timed out: %d/%d pending result(s) received.%n",
+              pending.size(), pendingResultCount);
+        else
+          pending.forEach(r -> System.out.println(
+              "EXEC_RESULT from: " + BenchPayload.getField(r, "workerId")));
+      }
 
       String stopJson = BenchPayload.stop(sessionId, UUID.randomUUID().toString());
       System.out.println("Sending STOP to all workers...");
@@ -276,6 +364,15 @@ public class BenchMan {
     } finally {
       manager.shutdown();
     }
+  }
+
+  // Returns true if this worker should execute the EXEC command based on targets.
+  // "all" or absent → always execute; "one" → only the leader executes;
+  // numeric targets are not yet implemented and default to executing.
+  static private boolean isTargeted(String workerId, String targets, String leaderId) {
+    if (targets == null || "all".equals(targets)) return true;
+    if ("one".equals(targets)) return workerId.equals(leaderId);
+    return true;
   }
 
   static private void runWorker() {
@@ -338,14 +435,49 @@ public class BenchMan {
 
           if ("EXEC".equals(type)) {
             if (verbose) logVerbose("RECV", body);
-            System.out.println("Received EXEC.");
             String commandId = BenchPayload.getField(body, "commandId");
-            // TODO: execute command defined in payload
-            String execResultJson = BenchPayload.execResult(
-                worker.getWorkerId(), sessionId, commandId, Map.of());
-            if (verbose) logVerbose("SEND", execResultJson);
-            worker.sendResult(execResultJson);
-            System.out.println("Sent EXEC_RESULT. Waiting for next command...");
+            String targets   = BenchPayload.getField(body, "targets");
+            String leaderId  = BenchPayload.getField(body, "leader_id");
+
+            if (!isTargeted(worker.getWorkerId(), targets, leaderId)) {
+              System.out.println("Skipping EXEC (not targeted for '" + targets + "'). Waiting for next command...");
+            } else {
+              String cmd = BenchPayload.getField(body, "cmd");
+              System.out.println("Executing: " + cmd);
+
+              long   startMs    = System.currentTimeMillis();
+              int    returnCode = -1;
+              String output     = "";
+
+              try {
+                ProcessBuilder pb = new ProcessBuilder("sh", "-c", cmd);
+                pb.redirectErrorStream(true); // merge stderr into stdout
+                Process process = pb.start();
+
+                StringBuilder sb = new StringBuilder();
+                try (BufferedReader reader = new BufferedReader(
+                        new InputStreamReader(process.getInputStream()))) {
+                  String line;
+                  while ((line = reader.readLine()) != null)
+                    sb.append(line).append("\n");
+                }
+                output     = sb.toString();
+                returnCode = process.waitFor();
+              } catch (IOException | InterruptedException e) {
+                output = "Error executing command: " + e.getMessage();
+                if (e instanceof InterruptedException) Thread.currentThread().interrupt();
+              }
+
+              long durationMs = System.currentTimeMillis() - startMs;
+              System.out.printf("Completed: return_code=%d  duration_ms=%d%n", returnCode, durationMs);
+
+              String execResultJson = BenchPayload.execResult(
+                  worker.getWorkerId(), sessionId, commandId,
+                  returnCode, durationMs, output);
+              if (verbose) logVerbose("SEND", execResultJson);
+              worker.sendResult(execResultJson);
+              System.out.println("Sent EXEC_RESULT. Waiting for next command...");
+            }
             idleDeadline = System.currentTimeMillis() + idleTimeoutMs;
           } else if ("STOP".equals(type)) {
             if (verbose) logVerbose("RECV", body);
