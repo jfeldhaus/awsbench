@@ -2,26 +2,23 @@ package com.awsbench.workloads.tptbm;
 
 //-----------------------------------------------------------
 //
-// TptbmAws.java
+// Tptbm.java
 // 
-// Java version of Tptbm benchmark for measuring scalability 
+// Tptbm benchmark for measuring scalability 
 // 
 //----------------------------------------------------------
 import java.sql.*;
 import java.io.*;
 import java.text.*;
 import java.lang.*;
-import java.util.*;
 
-class TptbmAws {
+class Tptbm {
 
   // class constants
   static public final int TPTBM_ORACLE = 0;
-  static public final int TPTBM_TIMESTEN = 1;
   static public final int TPTBM_POSTGRESQL = 2;
   static public final int TPTBM_MYSQL = 3;
   static public final int assumedTPS = 100000;
-  static public final int minHashPages = 40;
   static public final int dfltXacts = 10000;
   static public final int dfltRamptime = 10;
   static public final int dbModeId = -1;
@@ -87,14 +84,11 @@ class TptbmAws {
   static public boolean nobuild = false;
   static public boolean buildonly = false;
 
-  // Should we commit readonly transactions?
-  static public boolean commitReads = false;
-
   // Verbose mode (undocumented)
   static public boolean verbose = false;
 
-  // CSV output file name
-  static public String csvFile = "tptbm-aws.csv";
+  // CSV output file name (null = disabled)
+  static public String csvFile = null;
 
   // JDBC URL string
   static public String url = null;
@@ -111,8 +105,6 @@ class TptbmAws {
   // did the user specify the '-key' parameter
   static public boolean fkey = false;
 
-  // Range Index
-  public static boolean range = false;
 
 
 
@@ -127,19 +119,9 @@ class TptbmAws {
 
   public static final String deleteStmt = "delete from vpn_users where vpn_id = ? and vpn_nb = ?";
 
-  // remember to give pages parameter for this statement,
-  // its calculated based on key
-  private static final String createStmtHash = "CREATE TABLE vpn_users(" +
-      "vpn_id             TT_INTEGER   NOT NULL," +
-      "vpn_nb             TT_INTEGER   NOT NULL," +
-      "directory_nb       CHAR(10)  NOT NULL," +
-      "last_calling_party CHAR(10)  NOT NULL," +
-      "descr              CHAR(100) NOT NULL," +
-      "PRIMARY KEY (vpn_id,vpn_nb)) unique hash on (vpn_id,vpn_nb) pages = ";
-
-  private static final String createStmtRange = "CREATE TABLE vpn_users(" +
-      "vpn_id             TT_INTEGER   NOT NULL," +
-      "vpn_nb             TT_INTEGER   NOT NULL," +
+  private static final String createStmt = "CREATE TABLE vpn_users(" +
+      "vpn_id             INTEGER   NOT NULL," +
+      "vpn_nb             INTEGER   NOT NULL," +
       "directory_nb       CHAR(10)  NOT NULL," +
       "last_calling_party CHAR(10)  NOT NULL," +
       "descr              CHAR(100) NOT NULL," +
@@ -166,14 +148,13 @@ class TptbmAws {
     parseArgs(arg);
 
     // Turn the JDBC tracing on
-    if (TptbmAws.trace)
+    if (Tptbm.trace)
       DriverManager.setLogWriter(new PrintWriter(System.out, true));
 
     // Load the JDBC driver
     try {
       switch (dbms) {
         case TPTBM_ORACLE:     Class.forName("oracle.jdbc.OracleDriver"); break;
-        case TPTBM_TIMESTEN:   Class.forName("com.timesten.jdbc.TimesTenDriver"); break;
         case TPTBM_POSTGRESQL: Class.forName("org.postgresql.Driver"); break;
         case TPTBM_MYSQL:      Class.forName("com.mysql.cj.jdbc.Driver"); break;
       }
@@ -187,10 +168,10 @@ class TptbmAws {
 
     // Connect to the database
     try {
-      conn = DriverManager.getConnection(TptbmAws.url, username, password);
+      conn = DriverManager.getConnection(Tptbm.url, username, password);
 
       System.out.println();
-      System.out.println("Connected to database as " + username + "@" + TptbmAws.url);
+      System.out.println("Connected to database as " + username + "@" + Tptbm.url);
 
       // Disable auto-commit mode
       conn.setAutoCommit(false);
@@ -222,7 +203,7 @@ class TptbmAws {
 
       controller = new TptbmThreadController(numThreads, numXacts, testDuration, rampTime);
       System.out.println();
-      System.out.print("Begining execution with " + numThreads + " thread(s): ");
+      System.out.print("Beginning execution with " + numThreads + " thread(s): ");
       System.out.print(reads + "% read, " + updates + "% update, ");
       System.out.print(inserts + "% insert, " + deletes + "% delete");
       System.out.println();
@@ -256,7 +237,8 @@ class TptbmAws {
 
         System.out.printf("Avg Response Time:    %9.3f ms\n", avgRt);
 
-        writeCsv(startTime, tps, avgRt);
+        if (csvFile != null)
+          writeCsv(startTime, tps, avgRt);
       }
 
       System.out.println("");
@@ -294,7 +276,7 @@ class TptbmAws {
             dbk = dbp.substring(i, i2);
             i = Integer.parseInt(dbk);
             if (dbm.equals(dbMarker)) {
-              if (!TptbmAws.fkey) {
+              if (!Tptbm.fkey) {
                 key = i;
                 return true;
               } else {
@@ -341,15 +323,14 @@ class TptbmAws {
     System.err.println(
         "Usage:\n\n" +
 
-            "  TptbmAws {-h | -help}\n\n" +
+            "  Tptbm {-h | -help}\n\n" +
 
-            "  TptbmAws -url <url_string> -uid <username> -pwd <password>\n" +
+            "  Tptbm -url <url_string> -uid <username> -pwd <password>\n" +
             "        [-threads <num_threads>]\n" +
             "        [-multiop | [-read <read%>] [-insert <insert%>] [-delete <delete%>]]\n" +
             "        [{-xact <xacts> | -sec <seconds> [-ramp <rseconds>]}]\n" +
             "        [-min <min_xacts>] [-max <max_xacts>] [-seed <seed>]\n" +
-            "        [-commitReads] [-range] [-key <keys>]\n" +
-            "        [-trace] [-csv <file>] [-nobuild | -build ]");
+            "        [-key <keys>] [-trace] [-csv <file>] [-nobuild | -build ]");
 
     System.err.println("");
 
@@ -407,17 +388,6 @@ class TptbmAws {
           "  -seed <seed>           Specifies the seed for the random \n" +
           "                         number generator.\n\n" +
 
-          // " -csCommit Turn on prefetchClose for client/server. Not\n" +
-          // " allowed for direct mode connections or when\n" +
-          // " usign an Oracle database.\n\n" +
-
-          "  -commitReads           By default readonly transactions are not committed,\n" +
-          "                         use this option to force them to be committed.\n\n" +
-
-          "  -range                 Use a range rather than hash index for the primary key.\n" +
-          "                         This is the default when running against an Oracle\n" +
-          "                         database. Cannot be used with '-nobuild'.\n\n" +
-
           "  -key <keys>            Specifies the number of records (squared) to initially\n" +
           "                         populate in the data store. The default for keys is 100.\n" +
           "                         Cannot be used with '-nobuild'.\n\n" +
@@ -425,15 +395,15 @@ class TptbmAws {
           "  -trace                 Turns JDBC tracing on.\n\n" +
 
           "  -csv <file>            Append a result row to the named CSV file after each run.\n" +
-          "                         Default file name is tptbm-aws.csv.\n\n" +
+          "                         If not specified, no CSV output is written.\n\n" +
 
           "  -nobuild               Do not build the table; assumes table exists and is\n" +
           "                         already populated. Cannot be used with '-insert' or\n" +
           "                         '-delete'.\n");
 
         System.err.println(
-          "  -build                 Builds table and exits. Only the '-key' and '-range'\n" +
-          "                         parameters are relevant.\n");
+          "  -build                 Builds table and exits. Only the '-key'\n" +
+          "                         parameter is relevant.\n");
     } // full
     System.exit(1);
   }
@@ -454,27 +424,11 @@ class TptbmAws {
     int outerIndex, innerIndex;
     int cc = 0;
     Timer clock = new Timer();
-    int pages = ((key * key) / 256) + 1;
-    String createStmt = null;
     String dbm = null;
 
     System.out.println();
     System.out.println("Populating benchmark database ...");
     try {
-
-      if (pages < minHashPages)
-        pages = minHashPages;
-
-      // if (multiop == 1) {
-      if (inserts > 0) {
-        long addpgs;
-        int avgops = min_xact + ((max_xact - min_xact + 1) / 2);
-        long nx = numXacts;
-        if (numXacts <= 0)
-          nx = testDuration * assumedTPS;
-        addpgs = ((numThreads * nx * inserts * avgops) / (256 * 100)) + 1;
-        pages += addpgs;
-      }
 
       // Create a Statement object
       stmt = conn.createStatement();
@@ -485,14 +439,6 @@ class TptbmAws {
       } catch (SQLException ex) {
         try { conn.rollback(); } catch (SQLException ignore) { }
       }
-
-      if (range || dbms != TPTBM_TIMESTEN)
-        createStmt = createStmtRange;
-      else
-        createStmt = createStmtHash + pages;
-
-      if (dbms != TPTBM_TIMESTEN)
-        createStmt = createStmt.replaceAll("TT_INTEGER", "INTEGER");
 
       stmt.executeUpdate(createStmt);
 
@@ -543,9 +489,9 @@ class TptbmAws {
       long ms = clock.getTimeInMs();
 
       if (ms > 0) {
-        long tps = (long) ((double) (TptbmAws.key * TptbmAws.key) / ms * 1000);
+        long tps = (long) ((double) (Tptbm.key * Tptbm.key) / ms * 1000);
         System.out.println("\nDatabase populated with " +
-            TptbmAws.key * TptbmAws.key +
+            Tptbm.key * Tptbm.key +
             " rows in " +
             ms + " ms" + " (" +
             tps + " TPS)\n");
@@ -814,18 +760,6 @@ class TptbmAws {
         i += 1;
       }
 
-      // Range
-      else if (args[i].equalsIgnoreCase("-range")) {
-        if (range)
-          usage(false);
-        if (nobuild) {
-          System.err.println("You cannot specify '-range' with '-nobuild'.");
-          System.exit(1);
-        }
-        range = true;
-        i += 1;
-      }
-
       // JDBC tracing
       else if (args[i].equalsIgnoreCase("-trace")) {
         if (trace)
@@ -842,14 +776,6 @@ class TptbmAws {
         i += 1;
       }
 
-      // Commit reads - to match behavior prior to 5.0
-      else if (args[i].equalsIgnoreCase("-commitReads")) {
-        if (commitReads)
-          usage(false);
-        commitReads = true;
-        i += 1;
-      }
-
       // CSV output file
       else if (args[i].equalsIgnoreCase("-csv")) {
         if (++i >= args.length)
@@ -863,10 +789,6 @@ class TptbmAws {
           usage(false);
         if (fkey) {
           System.err.println("You cannot specify '-key' with '-nobuild'.");
-          System.exit(1);
-        }
-        if (range) {
-          System.err.println("You cannot specify '-range' with '-nobuild'.");
           System.exit(1);
         }
         nobuild = true;
@@ -935,8 +857,6 @@ class TptbmAws {
 
     if (url.startsWith("jdbc:oracle:"))
       dbms = TPTBM_ORACLE;
-    else if (url.startsWith("jdbc:timesten:"))
-      dbms = TPTBM_TIMESTEN;
     else if (url.startsWith("jdbc:postgresql:"))
       dbms = TPTBM_POSTGRESQL;
     else if (url.startsWith("jdbc:mysql:"))
@@ -944,10 +864,6 @@ class TptbmAws {
     else {
       System.err.println("Unsupported database URL: " + url);
       System.exit(1);
-    }
-
-    if (dbms == TPTBM_ORACLE) {
-      range = true;
     }
 
 
@@ -972,7 +888,6 @@ class TptbmAws {
   static private String dbTypeName() {
     switch (dbms) {
       case TPTBM_ORACLE:     return "oracle";
-      case TPTBM_TIMESTEN:   return "timesten";
       case TPTBM_POSTGRESQL: return "postgresql";
       case TPTBM_MYSQL:      return "mysql";
       default:               return "unknown";
@@ -1054,7 +969,6 @@ class TptbmThread extends Thread {
       "descr from vpn_users where vpn_id = ? and vpn_nb= ?";
   static private String updateStmt = "update vpn_users set last_calling_party" +
       "= ? where vpn_id = ? and vpn_nb = ?";
-  static private String getRsIdStmt = "select replicasetid# from dual";
 
   // --------------------------------------------------
   // Member variables
@@ -1109,7 +1023,7 @@ class TptbmThread extends Thread {
   // Constructor
   // --------------------------------------------------
   public TptbmThread(int id, int numXacts, int testDuration, int rampTime) {
-    if (TptbmAws.threadtrace)
+    if (Tptbm.threadtrace)
       System.out.println("constructing thread: " + id);
     this.id = id;
     this.numXacts = numXacts;
@@ -1123,7 +1037,7 @@ class TptbmThread extends Thread {
   // Called when start is called on the thread
   // --------------------------------------------------
   public void run() {
-    if (TptbmAws.threadtrace)
+    if (Tptbm.threadtrace)
       System.out.println("started running thread: " + id);
 
     try {
@@ -1134,7 +1048,7 @@ class TptbmThread extends Thread {
       setReady();
 
       // Wait here until parent indicates that threads can start execution
-      if (TptbmAws.threadtrace)
+      if (Tptbm.threadtrace)
         System.out.println(
             "thread " + id + " is waiting for the parent's signal");
       // Block and wait for go.
@@ -1143,7 +1057,7 @@ class TptbmThread extends Thread {
       execute();
 
     } catch (SQLException e) {
-      TptbmAws.printSQLException(e);
+      Tptbm.printSQLException(e);
       error = true;
     } finally {
       // does not harm to set the ready again in case we get an exception
@@ -1277,21 +1191,21 @@ class TptbmThread extends Thread {
     PreparedStatement prepInsStmt = connection.insStmt;
     PreparedStatement prepDelStmt = connection.delStmt;
     PreparedStatement prepUpdStmt = connection.updStmt;
-    java.util.Random rand = new java.util.Random(TptbmAws.seed);
+    java.util.Random rand = new java.util.Random(Tptbm.seed);
     int id_int;
     int nb_int;
     int path = 0;
     int ops_in_xact = 1;
     int jj;
-    if (TptbmAws.threadtrace)
+    if (Tptbm.threadtrace)
       System.out.println("Executing thread " + id);
 
-    if (TptbmAws.min_xact == TptbmAws.max_xact)
-      ops_in_xact = TptbmAws.min_xact;
+    if (Tptbm.min_xact == Tptbm.max_xact)
+      ops_in_xact = Tptbm.min_xact;
     else
-      ops_in_xact = TptbmAws.max_xact - TptbmAws.min_xact + 1;
+      ops_in_xact = Tptbm.max_xact - Tptbm.min_xact + 1;
 
-    if (TptbmAws.multiop == 1)
+    if (Tptbm.multiop == 1)
       ops_in_xact = 5;
 
     while (!runFinished()) {
@@ -1302,7 +1216,7 @@ class TptbmThread extends Thread {
           jj--;
 
           // Determine what type of transaction to execute
-          if (TptbmAws.multiop == 1) {
+          if (Tptbm.multiop == 1) {
             switch (jj) {
               case 4:
                 path = 2;
@@ -1317,13 +1231,13 @@ class TptbmThread extends Thread {
                 break; // update
             }
           } else {
-            if (TptbmAws.reads != 100) {
+            if (Tptbm.reads != 100) {
               // pick a number between 0 & 99
               int randnum = (int) (rand.nextFloat() * 100);
 
-              if (randnum < TptbmAws.reads + TptbmAws.inserts + TptbmAws.deletes) {
-                if (randnum < TptbmAws.reads + TptbmAws.inserts) {
-                  if (randnum < TptbmAws.reads) {
+              if (randnum < Tptbm.reads + Tptbm.inserts + Tptbm.deletes) {
+                if (randnum < Tptbm.reads + Tptbm.inserts) {
+                  if (randnum < Tptbm.reads) {
                     path = 1; // reads
                   } else {
                     path = 2; // insert
@@ -1343,13 +1257,13 @@ class TptbmThread extends Thread {
 
             // pick random values for key from the
             // range 0 -> key-1
-            id_int = (int) ((TptbmAws.key - 1) * rand.nextFloat());
-            nb_int = (int) ((TptbmAws.key - 1) * rand.nextFloat());
+            id_int = (int) ((Tptbm.key - 1) * rand.nextFloat());
+            nb_int = (int) ((Tptbm.key - 1) * rand.nextFloat());
 
 
             prepSelStmt.setInt(1, id_int);
             prepSelStmt.setInt(2, nb_int);
-            if (TptbmAws.threadtrace)
+            if (Tptbm.threadtrace)
               System.out.println("Thread " + id +
                   " is excuting select");
             ResultSet rs = prepSelStmt.executeQuery();
@@ -1362,8 +1276,6 @@ class TptbmThread extends Thread {
             rs.close();
 
             if (jj == 0) {
-              if (TptbmAws.commitReads)
-                tconn.conn.commit();
               totalXacts += 1;
               if (timing)
                 timedXacts += 1;
@@ -1375,14 +1287,14 @@ class TptbmThread extends Thread {
 
             // pick random values for key from the
             // range 0 -> key-1
-            id_int = (int) ((TptbmAws.key - 1) * rand.nextFloat());
-            nb_int = (int) ((TptbmAws.key - 1) * rand.nextFloat());
+            id_int = (int) ((Tptbm.key - 1) * rand.nextFloat());
+            nb_int = (int) ((Tptbm.key - 1) * rand.nextFloat());
  
 
             prepUpdStmt.setString(1, id_int + "x" + nb_int);
             prepUpdStmt.setInt(2, id_int);
             prepUpdStmt.setInt(3, nb_int);
-            if (TptbmAws.threadtrace)
+            if (Tptbm.threadtrace)
               System.out.println("Thread " + id +
                   " is excuting update");
             prepUpdStmt.executeUpdate();
@@ -1398,15 +1310,15 @@ class TptbmThread extends Thread {
           else if (path == 3) {
             id_int = delete_start;
             nb_int = delete_present++;
-            if (delete_present == TptbmAws.key) {
+            if (delete_present == Tptbm.key) {
               delete_present = 0;
-              delete_start += TptbmAws.numThreads;
+              delete_start += Tptbm.numThreads;
             }
  
 
             prepDelStmt.setInt(1, id_int);
             prepDelStmt.setInt(2, nb_int);
-            if (TptbmAws.threadtrace)
+            if (Tptbm.threadtrace)
               System.out.println("Thread " + id +
                   " is excuting delete");
 
@@ -1423,9 +1335,9 @@ class TptbmThread extends Thread {
           else {
             id_int = insert_start;
             nb_int = insert_present++;
-            if (insert_present == TptbmAws.key) {
+            if (insert_present == Tptbm.key) {
               insert_present = 0;
-              insert_start += TptbmAws.numThreads;
+              insert_start += Tptbm.numThreads;
             }
 
 
@@ -1436,7 +1348,7 @@ class TptbmThread extends Thread {
                 "<place holder for description " +
                     "of VPN " + id_int + " extension " +
                     nb_int + ">");
-            if (TptbmAws.threadtrace)
+            if (Tptbm.threadtrace)
               System.out.println("Thread " + id +
                   " is excuting insert");
 
@@ -1460,14 +1372,14 @@ class TptbmThread extends Thread {
   // --------------------------------------------------
   private void initialize() throws SQLException {
 
-    if (TptbmAws.threadtrace)
+    if (Tptbm.threadtrace)
       System.out.println("Initializing thread " + id);
 
     // Connect to the data store
-    if (TptbmAws.threadtrace)
+    if (Tptbm.threadtrace)
       System.out.println("Thread " + id + " is connecting");
 
-    connection.conn = DriverManager.getConnection(TptbmAws.url, TptbmAws.username, TptbmAws.password);
+    connection.conn = DriverManager.getConnection(Tptbm.url, Tptbm.username, Tptbm.password);
 
     // set autocommit off
     connection.conn.setAutoCommit(false);
@@ -1475,15 +1387,15 @@ class TptbmThread extends Thread {
 
 
     connection.conn.commit();
-    if (TptbmAws.threadtrace)
+    if (Tptbm.threadtrace)
       System.out.println("Thread " + id + " is preparing statements");
     connection.selStmt = connection.conn.prepareStatement(selectStmt);
-    connection.insStmt = connection.conn.prepareStatement(TptbmAws.insertStmt);
-    connection.delStmt = connection.conn.prepareStatement(TptbmAws.deleteStmt);
+    connection.insStmt = connection.conn.prepareStatement(Tptbm.insertStmt);
+    connection.delStmt = connection.conn.prepareStatement(Tptbm.deleteStmt);
     connection.updStmt = connection.conn.prepareStatement(updateStmt);
     connection.conn.commit();
 
-    insert_start = TptbmAws.key + id;
+    insert_start = Tptbm.key + id;
     delete_start = id;
   }
 
@@ -1495,7 +1407,7 @@ class TptbmThread extends Thread {
   public void cleanup() {
     try {
       connection.conn.commit();
-      if (TptbmAws.threadtrace)
+      if (Tptbm.threadtrace)
         System.out.println("Thread " + id + " is closing statements");
       connection.selStmt.close();
       connection.insStmt.close();
@@ -1504,7 +1416,7 @@ class TptbmThread extends Thread {
       connection.conn.close();
 
     } catch (SQLException e) {
-      TptbmAws.printSQLException(e);
+      Tptbm.printSQLException(e);
       error = true;
     }
   }
@@ -1586,7 +1498,7 @@ class TptbmThreadController {
 
     try {
 
-      if (TptbmAws.threadtrace)
+      if (Tptbm.threadtrace)
         System.out.println("Create threads");
 
       // Instantiate the threads
@@ -1594,14 +1506,14 @@ class TptbmThreadController {
         threads[i] = new TptbmThread(i, numXacts, testDuration, rampTime);
       }
 
-      if (TptbmAws.threadtrace)
+      if (Tptbm.threadtrace)
         System.out.println("Start all the threads");
 
       // Start all the threads
       for (int i = 0; i < numThreads; i++)
         threads[i].start();
 
-      if (TptbmAws.threadtrace)
+      if (Tptbm.threadtrace)
         System.out.println("Check if all the threads are ready");
 
       // Let all the threads initialize before
@@ -1622,7 +1534,7 @@ class TptbmThreadController {
       else if (testDuration > 0)
         tnext = tstart + (1000 * testDuration);
 
-      if (TptbmAws.threadtrace)
+      if (Tptbm.threadtrace)
         System.out.println(
             "Signal all the threads to go ahead and start execution");
 
@@ -1693,7 +1605,7 @@ class TptbmThreadController {
         System.out.println("Ramp-down done...terminating");
       }
 
-      if (TptbmAws.threadtrace)
+      if (Tptbm.threadtrace)
         System.out.println(
             "Wait for all the threads to finish before exit");
 
