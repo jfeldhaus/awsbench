@@ -15,7 +15,7 @@
     "commands": [
 
         {
-            "description": "Execute the Tptbm workload",
+            "description": "Build the Tptbm VPN_USERS table",
             "cmd_seq": 1,
             "cmd": "java -cp awsbench.jar com.awsbench.workloads.tptbm.Tptbm -url \"${url}\" -uid ${uid} -pwd ${pwd} -key ${keys} -build",
             "wait": true,
