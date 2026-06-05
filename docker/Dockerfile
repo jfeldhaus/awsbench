@@ -52,6 +52,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 
+RUN wget -qO global-bundle.pem \
+    https://truststore.pki.rds.amazonaws.com/global/global-bundle.pem
+
 COPY --from=builder /build/target/awsbench-1.0-SNAPSHOT.jar ./awsbench.jar
 COPY benchman.properties .
 

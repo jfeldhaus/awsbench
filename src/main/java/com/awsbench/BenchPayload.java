@@ -148,6 +148,35 @@ class BenchPayload {
   // Helpers
   // -------------------------------------------------------
 
+  // Returns a formatted multi-line summary of an EXEC_RESULT payload for console display.
+  public static String formatResult(String json) {
+    String workerId   = getField(json, "workerId");
+    String returnCode = getField(json, "return_code");
+    String durationMs = getField(json, "duration_ms");
+    String output     = getField(json, "output");
+
+    String duration;
+    try {
+      long ms = Long.parseLong(durationMs != null ? durationMs : "");
+      duration = ms >= 1000 ? String.format("%.1fs", ms / 1000.0) : ms + "ms";
+    } catch (NumberFormatException e) {
+      duration = durationMs != null ? durationMs : "?";
+    }
+
+    StringBuilder sb = new StringBuilder();
+    sb.append(String.format("  [%s]  rc=%s  %s%n",
+        workerId   != null ? workerId   : "?",
+        returnCode != null ? returnCode : "?",
+        duration));
+
+    if (output != null && !output.isBlank()) {
+      for (String line : output.stripTrailing().split("\n", -1))
+        sb.append("  | ").append(line).append(System.lineSeparator());
+    }
+
+    return sb.toString();
+  }
+
   public static String prettyPrint(String json) {
     try {
       Object obj = MAPPER.readValue(json, Object.class);
