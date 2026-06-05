@@ -1,0 +1,29 @@
+{
+    "name": "Benchman Execution Test",
+    "description": "Test configuration for validating command execution in Benchman.",
+
+    "props": {
+        "echo_1": "ping",
+        "echo_2": "pong"
+    },
+
+    "commands": [
+
+        {
+            "description": "One command to echo a message for a single target",
+            "cmd_seq": 1,
+            "cmd": "echo ${echo_1}",
+            "wait": true,
+            "targets": "one"
+        },
+
+        {
+            "description": "One command to echo a message for all targets",
+            "cmd_seq": 2,
+            "cmd": "echo ${echo_2}",
+            "wait": true,
+            "targets": "all"
+        }
+
+    ]
+}
