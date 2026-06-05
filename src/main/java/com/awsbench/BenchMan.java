@@ -336,9 +336,7 @@ public class BenchMan {
           List<String> results = manager.waitForResults(targetCount, resultTimeout, "EXEC_RESULT", sessionId);
           if (results.size() < targetCount)
             System.out.printf("  Timed out: %d/%d result(s) received.%n", results.size(), targetCount);
-          else
-            results.forEach(r -> System.out.println(
-                "  EXEC_RESULT from: " + BenchPayload.getField(r, "workerId")));
+          results.forEach(r -> System.out.print(BenchPayload.formatResult(r)));
         } else {
           pendingResultCount += targetCount;
           System.out.println("  Not waiting for result (wait=false).");
@@ -352,9 +350,7 @@ public class BenchMan {
         if (pending.size() < pendingResultCount)
           System.out.printf("Timed out: %d/%d pending result(s) received.%n",
               pending.size(), pendingResultCount);
-        else
-          pending.forEach(r -> System.out.println(
-              "EXEC_RESULT from: " + BenchPayload.getField(r, "workerId")));
+        pending.forEach(r -> System.out.print(BenchPayload.formatResult(r)));
       }
 
       String stopJson = BenchPayload.stop(sessionId, UUID.randomUUID().toString());

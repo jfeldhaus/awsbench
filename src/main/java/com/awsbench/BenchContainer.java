@@ -70,25 +70,32 @@ class BenchContainer {
   // -------------------------------------------------------
 
   // Launches count Fargate tasks and tracks their ARNs.
+  // RunTask accepts at most 10 tasks per call, so large counts are batched.
   public void launchTasks(int count) {
     if (count <= 0) return;
 
-    RunTaskResponse response = ecs.runTask(r -> r
-        .cluster(clusterName)
-        .taskDefinition(taskDefinition)
-        .launchType(LaunchType.FARGATE)
-        .count(count)
-        .networkConfiguration(n -> n.awsvpcConfiguration(v -> v
-            .subnets(subnetId)
-            .assignPublicIp(AssignPublicIp.ENABLED))));
+    int remaining = count;
+    while (remaining > 0) {
+      int batch = Math.min(remaining, 10);
+      RunTaskResponse response = ecs.runTask(r -> r
+          .cluster(clusterName)
+          .taskDefinition(taskDefinition)
+          .launchType(LaunchType.FARGATE)
+          .count(batch)
+          .networkConfiguration(n -> n.awsvpcConfiguration(v -> v
+              .subnets(subnetId)
+              .assignPublicIp(AssignPublicIp.ENABLED))));
 
-    for (Task task : response.tasks()) {
-      runningTaskArns.add(task.taskArn());
-      System.out.println("Launched task: " + task.taskArn());
-    }
+      for (Task task : response.tasks()) {
+        runningTaskArns.add(task.taskArn());
+        System.out.println("Launched task: " + task.taskArn());
+      }
 
-    for (Failure failure : response.failures()) {
-      System.err.println("Task launch failure [" + failure.arn() + "]: " + failure.reason());
+      for (Failure failure : response.failures()) {
+        System.err.println("Task launch failure [" + failure.arn() + "]: " + failure.reason());
+      }
+
+      remaining -= batch;
     }
   }
 
