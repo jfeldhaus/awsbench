@@ -497,6 +497,25 @@ class Tptbm {
             tps + " TPS)\n");
       }
 
+      // Optimize statistics for the query planner
+      System.out.println("Updating optimizer statistics...");
+      if (dbms == TPTBM_MYSQL) {
+        try (Statement sstmt = conn.createStatement()) {
+          sstmt.execute("ANALYZE TABLE vpn_users");
+        }
+      } else if (dbms == TPTBM_POSTGRESQL) {
+        try (Statement sstmt = conn.createStatement()) {
+          sstmt.execute("ANALYZE vpn_users");
+        }
+      } else {
+        try (CallableStatement cstmt = conn.prepareCall(
+            "BEGIN DBMS_STATS.GATHER_TABLE_STATS(NULL, ?, NULL, DBMS_STATS.AUTO_SAMPLE_SIZE); END;")) {
+          cstmt.setString(1, "VPN_USERS");
+          cstmt.execute();
+        }
+      }
+      System.out.println("  Statistics updated for vpn_users");
+
     } catch (SQLException e) {
       printSQLException(e);
       return false;

@@ -1,0 +1,32 @@
+{
+    "name": "DNA",
+    "description": "This is an OLTP database workload that simulates a DNA sequencing analysis application.",
+
+    "props": {
+        "uid": "postgres",
+        "pwd": "*****",
+        "url": "jdbc:postgresql://aurora-pg-instance-1.ckz4c6qeaovv.us-east-1.rds.amazonaws.com:5432/postgres?sslmode=verify-full&sslrootcert=./global-bundle.pem",
+
+        "threads": 8,
+        "options": ""
+    },
+
+    "commands": [
+
+        {
+            "description": "Populate the DNASeq schema",
+            "cmd_seq": 1,
+            "cmd": "java -cp awsbench.jar com.awsbench.workloads.dna.DNASeq -url \"${url}\" -uid ${uid} -pwd ${pwd} -mode populate",
+            "wait": true,
+            "targets": "one"
+        },
+
+        {
+            "description": "Execute the DNASeq workload",
+            "cmd_seq": 2,
+            "cmd": "java -cp awsbench.jar com.awsbench.workloads.dna.DNASeq -url \"${url}\" -uid ${uid} -pwd ${pwd} -threads ${threads} -mode workload",
+            "wait": true,
+            "targets": "all"
+        }
+    ]
+}
