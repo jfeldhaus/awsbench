@@ -1,0 +1,33 @@
+{
+    "name": "Tptbm",
+    "description": "This is a simple OLTP database benchmark with one table and a composite primary key.",
+
+    "props": {
+        "uid": "postgres",
+        "pwd": "*****",
+        "url": "jdbc:postgresql://aurora-pg-instance-1.ckz4c6qeaovv.us-east-1.rds.amazonaws.com:5432/postgres?sslmode=verify-full&sslrootcert=./global-bundle.pem",
+
+        "keys": 100,
+        "threads": 8,
+        "options": "-read 50 -xact 100000"
+    },
+
+    "commands": [
+
+        {
+            "description": "Execute the Tptbm workload",
+            "cmd_seq": 1,
+            "cmd": "java -cp awsbench.jar com.awsbench.workloads.tptbm.Tptbm -url \"${url}\" -uid ${uid} -pwd ${pwd} -key ${keys} -build",
+            "wait": true,
+            "targets": "one"
+        },
+
+        {
+            "description": "Execute the Tptbm workload",
+            "cmd_seq": 2,
+            "cmd": "java -cp awsbench.jar com.awsbench.workloads.tptbm.Tptbm -url \"${url}\" -uid ${uid} -pwd ${pwd} -threads ${threads} -nobuild ${options}",
+            "wait": true,
+            "targets": "all"
+        }
+    ]
+}
