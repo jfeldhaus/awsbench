@@ -57,3 +57,5 @@ This framework uses the SNS, SQS, ECR and ECS (Fargate) AWS services. The archit
 - [Tptbm](src/main/java/com/awsbench/workloads/tptbm/Tptbm.java)- This is a simple OLTP workload containing a single table with a composite primary key. The workload simulates a telecommunications application.
 
 - [DNA](src/main/java/com/awsbench/workloads/dna/DNASeq.java)- This is a more complicated OLTP workload that simulates a DNA sequencing application.
+
+- [DWWork](src/main/java/com/awsbench/workloads/dw/DWWork.java)- This is a data warehouse workload simulation using a star schema with dimension tables.
