@@ -1,10 +1,8 @@
 # AWS Bench
 
-This project implements a distributed load generation tool that enables programs to execute concurrently within containers across an ECS (Elastic Container Service) cluster. Any program available in the container can be configured to execute.
+This project implements a distributed workload generation tool that enables programs to execute concurrently within containers across an AWS ECS (Elastic Container Service) cluster. The project contains several different database workload programs which can be executed against relational databases including PostgreSQL, MySQL, Oracle and Aurora. However, any program available in the container can be configured to execute.
 
-This project is currently configured to execute benchmarks and other test programs against relational databases like Aurora and RDS (Relational Database Service) databases including PostgreSQL, MySQL and Oracle.
-
-The BenchMan program is responsible for implementing these capabilities. This program runs in two modes. In the *controller* mode a single instance of BenchMan runs on an EC2 instance. The controller is responsible for provisioning AWS resources, sending commands to ECS containers and gathering results. The ECS containers run the BenchMan program in *worker* mode. In worker mode the program is responsible for processing commands sent to it by the controller and returning results from those commands to the controller.
+The BenchMan program is responsible for implementing these capabilities. BenchMan runs in two modes. In the *controller* mode a single instance of BenchMan runs on an EC2 instance. The controller is responsible for deploying containers to ECS and sending commands to containers. The ECS containers run the BenchMan program in *worker* mode. In worker mode the program is responsible for processing commands sent to it by the controller and returning results from those commands to the controller.
 
 This framework uses the SNS, SQS, ECR and ECS (Fargate) AWS services. The architecture looks like this.
 
@@ -53,3 +51,9 @@ This framework uses the SNS, SQS, ECR and ECS (Fargate) AWS services. The archit
 │  └──────────────────────────────────────┘                                    │
 └──────────────────────────────────────────────────────────────────────────────┘
 ```
+
+## Workload Programs
+
+- [Tptbm](src/main/java/com/awsbench/workloads/tptbm/Tptbm.java)- This is a simple OLTP workload containing a single table with a composite primary key. The workload simulates a telecommunications application.
+
+- [DNA](src/main/java/com/awsbench/workloads/dna/DNASeq.java)- This is a more complicated OLTP workload that simulates a DNA sequencing application.
