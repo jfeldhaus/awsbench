@@ -1,0 +1,31 @@
+{
+    "name": "DWWork",
+    "description": "This is a data warehouse simulation.",
+
+    "props": {
+        "uid": "postgres",
+        "pwd": "*****",
+        "url": "jdbc:postgresql://aurora-pg-instance-1.ckz4c6qeaovv.us-east-1.rds.amazonaws.com:5432/postgres?sslmode=verify-full&sslrootcert=./global-bundle.pem",
+
+        "threads": 8
+    },
+
+    "commands": [
+
+        {
+            "description": "Populate the DWWork schema",
+            "cmd_seq": 1,
+            "cmd": "java -cp awsbench.jar com.awsbench.workloads.dw.DWWork -url \"${url}\" -uid ${uid} -pwd ${pwd} -mode populate",
+            "wait": true,
+            "targets": "one"
+        },
+
+        {
+            "description": "Execute the DWWork workload",
+            "cmd_seq": 2,
+            "cmd": "java -cp awsbench.jar com.awsbench.workloads.dw.DWWork -url \"${url}\" -uid ${uid} -pwd ${pwd} -threads ${threads} -mode workload",
+            "wait": true,
+            "targets": "all"
+        }
+    ]
+}
