@@ -1,0 +1,33 @@
+{
+    "name": "AirWork",
+    "description": "This is an air traffic control simulation using JSON documents.",
+
+    "props": {
+        "uid": "postgres",
+        "pwd": "*****",
+        "url": "jdbc:postgresql://aurora-pg-instance-1.ckz4c6qeaovv.us-east-1.rds.amazonaws.com:5432/postgres?sslmode=verify-full&sslrootcert=./global-bundle.pem",
+
+        "threads": 8,
+        "duration": 60
+
+    },
+
+    "commands": [
+
+        {
+            "description": "Populate the AirWork schema",
+            "cmd_seq": 1,
+            "cmd": "java -cp awsbench.jar com.awsbench.workloads.airwork.AirWork -url \"${url}\" -uid ${uid} -pwd ${pwd} -populate",
+            "wait": true,
+            "targets": "one"
+        },
+
+        {
+            "description": "Execute the AirWork workload",
+            "cmd_seq": 2,
+            "cmd": "java -cp awsbench.jar com.awsbench.workloads.airwork.AirWork -url \"${url}\" -uid ${uid} -pwd ${pwd} -threads ${threads} -duration ${duration} -run",
+            "wait": true,
+            "targets": "all"
+        }
+    ]
+}
