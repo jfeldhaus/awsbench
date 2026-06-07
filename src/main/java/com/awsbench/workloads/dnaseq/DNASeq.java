@@ -1,4 +1,4 @@
-package com.awsbench.workloads.dna;
+package com.awsbench.workloads.dnaseq;
 
 import java.sql.*;
 import java.util.*;
