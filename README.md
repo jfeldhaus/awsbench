@@ -11,7 +11,7 @@ This framework uses the SNS, SQS, ECR and ECS (Fargate) AWS services. The archit
 │  AWS (us-east-1)                                                             │
 │                                                                              │
 │  ┌────────────────────────────────────────────────────────────────────────┐  │
-│  │  ECR: <id>.dkr.ecr.us-east-1.amazonaws.com/aws/awsbench:latest │  │
+│  │  ECR: <id>.dkr.ecr.us-east-1.amazonaws.com/aws/awsbench:latest         │
 │  └───────────────────────────────────┬────────────────────────────────────┘  │
 │                                      │ image pulled on task start            │
 │  ┌───────────────────────────┐       │  ┌─────────────────────────────────┐  │
